@@ -1,7 +1,7 @@
 #!/bin/bash
-# TDH 2015-04-27
+# TDH 2024-04-27
 # Messy script for zimbra password expiry email notification.
-# Meant to be performed as daily cronjob run as zimbra user.
+# Meant to be performed as daily cronjob run as zimbra user. 
 # redirect output to a file to get a 'log file' of sorts.
 
 # Time taken of script;
@@ -11,22 +11,20 @@ echo "$SECONDS Started on: $(date)"
 # First notification in days, then last warning:
 FIRST="7"
 LAST="3"
+# pass expiry in days
+POLICY="90"
 # Sent from:
-FROM="admin@example.com"
+FROM="it_support@labkimiafarma.co.id"
 # Domain to check, e.g. 'example.com'; leave blank for all
 DOMAIN=""
 # Recipient who should receive an email with all expired accounts
-ADMIN_RECIPIENT="admin@example.com"
+ADMIN_RECIPIENT="postmaster@labkimiafarma.co.id"
 
 # Sendmail executable
-# Uncomment line corresponding to your ZCS version
-#Before ZCS 8.9
-SENDMAIL=$(ionice -c3 find /opt/zimbra/postfix* -type f -iname sendmail)
-#From ZCS 8.9
-#SENDMAIL=$(ionice -c3 find /opt/zimbra/common/sbin -type f -iname sendmail)
+SENDMAIL=$(ionice -c3 find /opt/zimbra/ -type f -iname sendmail)
 
 # Get all users - it should run once only.
-USERS=$(ionice -c3 /opt/zimbra/bin/zmprov -l gaa $DOMAIN)
+USERS=`/opt/zimbra/bin/zmprov -l gaa`;
 
 #Todays date, in seconds:
 DATE=$(date +%s)
@@ -35,41 +33,49 @@ DATE=$(date +%s)
 for USER in $USERS
  do
 # When was the password set?
-USERINFO=$(ionice -c3 /opt/zimbra/bin/zmprov ga "$USER")
-PASS_SET_DATE=$(echo "$USERINFO" | grep zimbraPasswordModifiedTime: | cut -d " " -f 2 | cut -c 1-8)
-PASS_MAX_AGE=$(echo "$USERINFO" | grep "zimbraPasswordMaxAge:" | cut -d " " -f 2)
-NAME=$(echo "$USERINFO" | grep givenName | cut -d " " -f 2)
-
-# Check if we have set the account to no-expire
-if [[ "$PASS_MAX_AGE" -eq "0" ]]
-then
-  continue
-fi
+OBJECT="(&(objectClass=zimbraAccount)(mail=$USER))"
+ZIMBRA_LDAP_PASSWORD=`su - zimbra -c "zmlocalconfig -s zimbra_ldap_password | cut -d ' ' -f3"`
+LDAP_MASTER_URL=`su - zimbra -c "zmlocalconfig -s ldap_master_url | cut -d ' ' -f3"`
+LDAPSEARCH=$(ionice -c3 find /opt/zimbra/ -type f -iname ldapsearch)
+PASS_SET_DATE=`$LDAPSEARCH -H $LDAP_MASTER_URL -w $ZIMBRA_LDAP_PASSWORD -D uid=zimbra,cn=admins,cn=zimbra -x $OBJECT | grep zimbraPasswordModifiedTime: | cut -d " " -f 2 | cut -c 1-8`
 
 # Make the date for expiry from now.
-EXPIRES=$(date -d  "$PASS_SET_DATE $PASS_MAX_AGE days" +%s)
+EXPIRES=$(date -d  "$PASS_SET_DATE $POLICY days" +%s)
 
 # Now, how many days until that?
 DEADLINE=$(( (($DATE - $EXPIRES)) / -86400 ))
 
 # Email to send to victims, ahem - users...
-SUBJECT="$NAME - Your Password will expire in $DEADLINE days"
+SUBJECT="$USER - Password email anda akan expire $DEADLINE hari lagi"
 BODY="
-Hi $NAME,
+Kepada Yth $USER,
 
-Your account password will expire in $DEADLINE days, Please reset your password soon.
-You may also enter a zimbra calendar event to remind you.
+Dengan ini diberitahukan bahwa password Email Anda akan expire dalam $DEADLINE hari. Harap mengganti password Email Anda segera melalui Web Mail:
 
-Thanks,
-Admin team
+ - Akses : https://mail.labkimiafarma.co.id
 
+Cara penggantian password Email :
+
+1. Login pada Web Mail sesuai alamat di atas
+2. Pilih tab Preferences
+3. Pada menu General | Sign in. klik tombol Change Password
+4. Isikan password lama, password baru & konfirmasi password baru Anda
+5. Klik tombol Change password untuk menggantinya
+
+Password akun Email minimal terdiri dari 8 karakter, dengan kombinasi alphanumerik (huruf besar, huruf kecil, angka) dan simbol (!@#$, dst.).
+
+Jika ada pertanyaan mengenai cara mengganti password Email, silakan menghubungi team IT KFD Pak Fikri +62 821-1205-8720
+
+
+Terima Kasih,
+IT KFD
 "
 # Send it off depending on days, adding verbose statements for the 'log'
 # First warning
 if [[ "$DEADLINE" -eq "$FIRST" ]]
 then
 	echo "Subject: $SUBJECT" "$BODY" | $SENDMAIL -f "$FROM" "$USER"
-	echo "Reminder email sent to: $USER - $DEADLINE days left"
+	echo "Reminder email sent to: $USER - $DEADLINE days left" 
 # Second
 elif [[ "$DEADLINE" -eq "$LAST" ]]
 then
@@ -80,39 +86,13 @@ elif [[ "$DEADLINE" -eq "1" ]]
 then
     echo "Subject: $SUBJECT" "$BODY" | $SENDMAIL -f "$FROM" "$USER"
 	echo "Last chance for: $USER - $DEADLINE days left"
+	
+else 
 
-# Check for Expired accounts, get last logon date add them to EXP_LIST2 every monday
-elif [[ "$DEADLINE" -lt "0" ]] && [ "$(date +%a)" = "Mon" ]
- then
-    LASTDATE=$(echo "$USERINFO" | grep zimbraLastLogonTimestamp | cut -d " " -f 2 | cut -c 1-8)
-    LOGON=$(date -d "$LASTDATE")
-	EXP_LIST=$(echo "$USER's password has been expired for ${DEADLINE#-} day(s) now, last logon was $LOGON.")
-	EXP_LIST2="$EXP_LIST2 \n $EXP_LIST"
-
-else
-# > /dev/null for less verbose logs and a list of users.
     echo "Account: $USER reports; $DEADLINE days on Password policy"
 fi
 
 # Finish for loop
 done
 
-echo "-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-"
-
-# Send off list using hardcoded email addresses.
-
-EXP_BODY="
-Hello Admin team,
-
-List of expired passwords and their last recorded login date:
-$(echo -e "$EXP_LIST2")
-
-Regards,
-Support.
-"
-echo "Subject: List of accounts with expired passwords" "$EXP_BODY" | $SENDMAIL -f "$FROM" "$ADMIN_RECIPIENT"
-# Expired accts, for the log:
-echo -e "$EXP_LIST2"
-
-echo "finished in $SECONDS seconds"
 echo "-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-"
